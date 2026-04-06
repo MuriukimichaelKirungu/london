@@ -1,0 +1,52 @@
+name: london
+description: "A new Flutter project."
+
+publish_to: 'none'
+
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.7.2
+
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+
+  cupertino_icons: ^1.0.8
+  firebase_core: ^3.8.0
+  firebase_auth: ^5.3.0
+  cloud_firestore: ^5.4.0
+  fl_chart: ^0.66.2
+  path_provider: ^2.1.1
+  pdf: ^3.11.0
+  excel: ^4.0.2
+  printing: ^5.13.0
+  intl: ^0.18.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+
+flutter_launcher_icons: ^0.13.1
+
+
+
+flutter:
+
+
+  uses-material-design: true
+
+# ✅ App Icon setup
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/app_icon.png"
+
+# ✅ App Name setup
+flutter_launcher_name:
+  name: "London Electronics"

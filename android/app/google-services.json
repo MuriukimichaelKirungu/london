@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "259055358038",
+    "project_id": "london-5db92",
+    "storage_bucket": "london-5db92.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:259055358038:android:8807ab3cf54d047e122bf7",
+        "android_client_info": {
+          "package_name": "com.example.london"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0ncxx8UcwIYGnF06xTp4DliU883ocefY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
