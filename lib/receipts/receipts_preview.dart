@@ -1,16 +1,17 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ReceiptsPreviewScreen extends StatefulWidget {
   final String branch;
   final String employee;
   final String clientName;
   final DateTime date;
-
-  // item = {"product": String, "quantity": int, "unitPrice": int, "discount": int, "total": int}
   final List<Map<String, dynamic>> items;
 
   const ReceiptsPreviewScreen({
@@ -23,11 +24,15 @@ class ReceiptsPreviewScreen extends StatefulWidget {
   });
 
   @override
-  State<ReceiptsPreviewScreen> createState() => _ReceiptsPreviewScreenState();
+  State<ReceiptsPreviewScreen> createState() =>
+      _ReceiptsPreviewScreenState();
 }
 
 class _ReceiptsPreviewScreenState extends State<ReceiptsPreviewScreen> {
+  final BlueThermalPrinter printer = BlueThermalPrinter.instance;
+
   bool _customerPrinted = false;
+  BluetoothDevice? selectedDevice;
 
   int get grandTotal =>
       widget.items.fold(0, (sum, item) => sum + (item["total"] as int));
@@ -35,119 +40,153 @@ class _ReceiptsPreviewScreenState extends State<ReceiptsPreviewScreen> {
   String get formattedDate =>
       DateFormat("dd/MM/yyyy hh:mm a").format(widget.date.toLocal());
 
-  /// 🔹 Build PDF receipt (item name line, qty & price below)
-  pw.Widget _buildReceipt(String copyType) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.symmetric(horizontal: 4),
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: [
-          pw.Center(
-            child: pw.Column(
-              children: [
-                pw.Text(
-                  "HEBAIC GENERAL TRADERS LIMITED",
-                  style: pw.TextStyle(
-                      fontSize: 14, fontWeight: pw.FontWeight.bold),
-                ),
-                pw.SizedBox(height: 2),
-                pw.Text(
-                  "CONTACTS: 0706565994",
-                  textAlign: pw.TextAlign.center,
-                  style: pw.TextStyle(
-                      fontSize: 9, fontWeight: pw.FontWeight.bold),
-                ),
-                pw.Text(
-                  "LOCATION: TAVETA ROAD LONDON BEAUTY FIRST FLOOR F8",
-                  textAlign: pw.TextAlign.center,
-                  style: pw.TextStyle(
-                      fontSize: 9, fontWeight: pw.FontWeight.bold),
-                ),
-                pw.Text(
-                  "DEALS: TVS, RADIOS, AMPLIFIERS, SPEAKERS,\n"
-                      "FRIDGES & FREEZERS, SOLAR BATTERIES,\n"
-                      "ALL ELECTRONICS & ACCESSORIES",
-                  textAlign: pw.TextAlign.center,
-                  style: pw.TextStyle(
-                      fontSize: 8, fontWeight: pw.FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
+  final currencyFormatter = NumberFormat("#,##0");
 
-          pw.SizedBox(height: 6),
-          pw.Text(
-            "---- $copyType COPY ----",
-            style: pw.TextStyle(
-                fontSize: 11, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.SizedBox(height: 4),
-          pw.Text(
-            "BRANCH: ${widget.branch.toUpperCase()}",
-            style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.Text(
-            "CASHIER: ${widget.employee.toUpperCase()}",
-            style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.Text(
-            "CUSTOMER: ${widget.clientName.toUpperCase()}",
-            style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.Text(
-            "DATE: $formattedDate",
-            style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.Divider(),
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedPrinter();
+  }
 
-          ...widget.items.map((item) {
-            final product =
-            (item["product"] ?? "").toString().toUpperCase();
-            final qty = item["quantity"] ?? 0;
-            final unitPrice = item["unitPrice"] ?? 0;
-            final totalPrice = unitPrice * qty; // ✅ Multiply by quantity
+  Future<void> _loadSavedPrinter() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedAddress = prefs.getString("printer_address");
 
-            return pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text(
-                  product,
-                  style: pw.TextStyle(
-                      fontSize: 9, fontWeight: pw.FontWeight.bold),
-                ),
-                pw.Text(
-                  "QTY: $qty    KSH $totalPrice", // ✅ show total for line item
-                  style: pw.TextStyle(
-                      fontSize: 9, fontWeight: pw.FontWeight.bold),
-                ),
-                pw.SizedBox(height: 2),
-              ],
+    if (savedAddress == null) return;
+
+    List<BluetoothDevice> devices =
+    await printer.getBondedDevices();
+
+    for (var device in devices) {
+      if (device.address == savedAddress) {
+        selectedDevice = device;
+        try {
+          await printer.connect(device);
+        } catch (_) {}
+        setState(() {});
+        break;
+      }
+    }
+  }
+
+  Future<void> _savePrinter(BluetoothDevice device) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString("printer_address", device.address!);
+  }
+
+  Future<void> selectPrinter() async {
+    List<BluetoothDevice> devices =
+    await printer.getBondedDevices();
+
+    showModalBottomSheet(
+      context: context,
+      builder: (_) {
+        return ListView(
+          children: devices.map((device) {
+            return ListTile(
+              title: Text(device.name ?? "Unknown"),
+              subtitle: Text(device.address ?? ""),
+              onTap: () async {
+                Navigator.pop(context);
+                await printer.connect(device);
+                await _savePrinter(device);
+                setState(() => selectedDevice = device);
+              },
             );
           }).toList(),
-
-          pw.Divider(),
-          pw.Text(
-            "GRAND TOTAL: KSH $grandTotal",
-            style: pw.TextStyle(
-                fontSize: 11, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.SizedBox(height: 10),
-          pw.Center(
-            child: pw.Text(
-              "THANK YOU FOR SHOPPING WITH US!",
-              style: pw.TextStyle(
-                  fontSize: 8, fontWeight: pw.FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  /// 🔹 AppBar print button handler (customer → business)
-  Future<void> _handlePrint() async {
-    final copyType = _customerPrinted ? "Business" : "Customer";
+  // ==============================
+  // 🔥 BLUETOOTH PRINT
+  // ==============================
+  Future<void> printViaBluetooth() async {
+    bool? isConnected = await printer.isConnected;
 
+    if (isConnected != true) {
+      if (selectedDevice != null) {
+        await printer.connect(selectedDevice!);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Please connect printer first")),
+        );
+        return;
+      }
+    }
+
+    final copyType = _customerPrinted ? "BUSINESS" : "CUSTOMER";
+
+    double totalVatAll = 0;
+    double totalExVatAll = 0;
+
+    printer.printNewLine();
+    printer.printCustom("HEBAIC GENERAL TRADERS LIMITED", 3, 1);
+    printer.printCustom("CONTACTS: 0706565994", 1, 1);
+    printer.printCustom(
+        "LOCATION: TAVETA ROAD LONDON BEAUTY FIRST FLOOR F8", 1, 1);
+
+    printer.printNewLine();
+    printer.printCustom("---- $copyType COPY ----", 2, 0);
+    printer.printCustom("BRANCH: ${widget.branch}", 1, 0);
+    printer.printCustom("CASHIER: ${widget.employee}", 1, 0);
+    printer.printCustom("CUSTOMER: ${widget.clientName}", 1, 0);
+    printer.printCustom("DATE: $formattedDate", 1, 0);
+
+    printer.printNewLine();
+
+    for (var item in widget.items) {
+      final product =
+      (item["product"] ?? "").toString().toUpperCase();
+
+      final qty = item["quantity"] ?? 0;
+      final sellingPrice = item["unitPrice"] ?? 0;
+
+      final total = sellingPrice * qty;
+      final exVat = (sellingPrice / 1.16) * qty;
+      final vat = total - exVat;
+
+      totalVatAll += vat;
+      totalExVatAll += exVat;
+
+      printer.printCustom(product, 1, 0);
+      printer.printCustom("QTY: $qty", 1, 0);
+      printer.printCustom(
+          "UNIT PRICE (EX VAT): ${currencyFormatter.format(exVat)}", 1, 0);
+      printer.printCustom(
+          "VAT (16%): ${currencyFormatter.format(vat)}", 1, 0);
+      printer.printCustom(
+          "TOTAL (INC VAT): ${currencyFormatter.format(total)}", 1, 0);
+
+      printer.printNewLine();
+    }
+
+    printer.printCustom(
+        "TOTAL EX VAT: ${currencyFormatter.format(totalExVatAll)}", 1, 0);
+    printer.printCustom(
+        "TOTAL VAT: ${currencyFormatter.format(totalVatAll)}", 1, 0);
+
+    printer.printNewLine();
+    printer.printCustom(
+        "GRAND TOTAL: KSH ${currencyFormatter.format(grandTotal)}",
+        2,
+        0);
+
+    printer.printNewLine();
+    printer.printCustom("THANK YOU FOR SHOPPING WITH US!", 1, 1);
+    printer.printNewLine();
+    printer.paperCut();
+
+    if (!_customerPrinted) {
+      setState(() => _customerPrinted = true);
+    }
+  }
+
+  // ==============================
+  // 📄 PDF PRINT
+  // ==============================
+  Future<void> printViaPdf() async {
     final pdf = pw.Document();
     pdf.addPage(
       pw.Page(
@@ -156,48 +195,74 @@ class _ReceiptsPreviewScreenState extends State<ReceiptsPreviewScreen> {
           double.infinity,
           marginAll: 4,
         ),
-        build: (_) => _buildReceipt(copyType),
+        build: (_) => pw.Text("Use Android for Bluetooth printing"),
       ),
     );
 
     await Printing.layoutPdf(
       onLayout: (_) async => pdf.save(),
     );
+  }
 
-    if (!_customerPrinted) {
-      setState(() => _customerPrinted = true);
+  Future<void> _handlePrint() async {
+    if (Platform.isAndroid) {
+      await printViaBluetooth();
+    } else {
+      await printViaPdf();
     }
   }
 
-  /// 🔹 Build text preview
+  // ==============================
+  // 🖥 PREVIEW
+  // ==============================
   String _buildPreview(String copyType) {
     final buffer = StringBuffer();
+
+    double totalVatAll = 0;
+    double totalExVatAll = 0;
+
     buffer.writeln("HEBAIC GENERAL TRADERS LIMITED");
     buffer.writeln("CONTACTS: 0706565994");
-    buffer.writeln("LOCATION: TAVETA ROAD LONDON BEAUTY FIRST FLOOR f8");
+    buffer.writeln("LOCATION: TAVETA ROAD LONDON BEAUTY FIRST FLOOR F8");
     buffer.writeln("---- $copyType COPY ----");
-    buffer.writeln("BRANCH: ${widget.branch.toUpperCase()}");
-    buffer.writeln("CASHIER: ${widget.employee.toUpperCase()}");
-    buffer.writeln("CUSTOMER: ${widget.clientName.toUpperCase()}");
+    buffer.writeln("BRANCH: ${widget.branch}");
+    buffer.writeln("CASHIER: ${widget.employee}");
+    buffer.writeln("CUSTOMER: ${widget.clientName}");
     buffer.writeln("DATE: $formattedDate");
     buffer.writeln("--------------------------------");
 
     for (var item in widget.items) {
       final product =
       (item["product"] ?? "").toString().toUpperCase();
+
       final qty = item["quantity"] ?? 0;
-      final unitPrice = item["unitPrice"] ?? 0;
-      final totalPrice = unitPrice * qty; // ✅ Multiply by quantity
+      final sellingPrice = item["unitPrice"] ?? 0;
+
+      final total = sellingPrice * qty;
+      final exVat = (sellingPrice / 1.16) * qty;
+      final vat = total - exVat;
+
+      totalVatAll += vat;
+      totalExVatAll += exVat;
 
       buffer.writeln(product);
-      buffer.writeln("QTY: $qty    KSH $totalPrice\n"); // ✅ show total for line item
+      buffer.writeln("QTY: $qty");
+      buffer.writeln(
+          "UNIT PRICE (EX VAT): ${currencyFormatter.format(exVat)}");
+      buffer.writeln("VAT (16%): ${currencyFormatter.format(vat)}");
+      buffer.writeln(
+          "TOTAL (INC VAT): ${currencyFormatter.format(total)}\n");
     }
 
     buffer.writeln("--------------------------------");
-    buffer.writeln("GRAND TOTAL: KSH $grandTotal");
-    buffer.writeln("VAT 16% INCLUDED");
+    buffer.writeln(
+        "TOTAL EX VAT: ${currencyFormatter.format(totalExVatAll)}");
+    buffer.writeln(
+        "TOTAL VAT: ${currencyFormatter.format(totalVatAll)}");
+    buffer.writeln(
+        "GRAND TOTAL: KSH ${currencyFormatter.format(grandTotal)}");
     buffer.writeln("THANK YOU FOR SHOPPING WITH US!");
-    buffer.writeln("");
+
     return buffer.toString();
   }
 
@@ -207,52 +272,44 @@ class _ReceiptsPreviewScreenState extends State<ReceiptsPreviewScreen> {
         "-------- CUT HERE --------\n" +
         _buildPreview("Business");
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final screenWidth = constraints.maxWidth;
-        final isTablet = screenWidth > 600 && screenWidth <= 900;
-        final isDesktop = screenWidth > 900;
-
-        final horizontalPadding = isDesktop
-            ? 48.0
-            : isTablet
-            ? 32.0
-            : 16.0;
-
-        final fontSize = isDesktop
-            ? 16.0
-            : isTablet
-            ? 15.0
-            : 14.0;
-
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text("Receipt Preview"),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.print),
-                onPressed: _handlePrint,
-              ),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Receipt Preview"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.print),
+            onPressed: _handlePrint,
           ),
-          body: Padding(
-            padding: EdgeInsets.symmetric(
-              horizontal: horizontalPadding,
-              vertical: 16,
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            ElevatedButton.icon(
+              onPressed: selectPrinter,
+              icon: const Icon(Icons.bluetooth),
+              label: Text(
+                selectedDevice == null
+                    ? "Connect Printer"
+                    : "Connected: ${selectedDevice!.name}",
+              ),
             ),
-            child: SingleChildScrollView(
-              child: Text(
-                previewText,
-                style: TextStyle(
-                  fontFamily: "monospace",
-                  fontSize: fontSize,
-                  fontWeight: FontWeight.bold,
+            const SizedBox(height: 10),
+            Expanded(
+              child: SingleChildScrollView(
+                child: Text(
+                  previewText,
+                  style: const TextStyle(
+                    fontFamily: "monospace",
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
-          ),
-        );
-      },
+          ],
+        ),
+      ),
     );
   }
 }

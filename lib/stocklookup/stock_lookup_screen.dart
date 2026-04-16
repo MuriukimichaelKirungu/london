@@ -137,43 +137,21 @@ class _StockLookupScreenState extends State<StockLookupScreen> {
                 child: Center(child: Text("No results found")),
               )
 
-            /// RESULTS
+            /// RESULTS (UPDATED TO PAGINATED TABLE)
             else
               Expanded(
-                child: ListView(
-                  children: grouped.entries.map((entry) {
-                    final items = entry.value;
-                    final first = items.first;
-
-                    return Card(
-                      elevation: 3,
-                      margin: const EdgeInsets.symmetric(vertical: 8),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      child: ExpansionTile(
-                        leading: const Icon(Icons.inventory),
-                        title: Text(
-                          first["name"],
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text(
-                          "Model: ${first["model"]}",
-                        ),
-                        children: items.map((item) {
-                          return ListTile(
-                            leading: const Icon(Icons.store),
-                            title: Text(item["branch"]),
-                            trailing: Text(
-                              "Qty: ${item["quantity"]}",
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.bold),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    );
-                  }).toList(),
+                child: SingleChildScrollView(
+                  child: PaginatedDataTable(
+                    header: const Text("Stock Results"),
+                    rowsPerPage: 5,
+                    columns: const [
+                      DataColumn(label: Text("Product")),
+                      DataColumn(label: Text("Model")),
+                      DataColumn(label: Text("Branch")),
+                      DataColumn(label: Text("Quantity")),
+                    ],
+                    source: _StockTableSource(results),
+                  ),
                 ),
               ),
           ],
@@ -181,4 +159,33 @@ class _StockLookupScreenState extends State<StockLookupScreen> {
       ),
     );
   }
+}
+
+class _StockTableSource extends DataTableSource {
+  final List<Map<String, dynamic>> data;
+
+  _StockTableSource(this.data);
+
+  @override
+  DataRow getRow(int index) {
+    if (index >= data.length) return const DataRow(cells: []);
+
+    final item = data[index];
+
+    return DataRow(cells: [
+      DataCell(Text(item["name"] ?? "")),
+      DataCell(Text(item["model"] ?? "")),
+      DataCell(Text(item["branch"] ?? "")),
+      DataCell(Text(item["quantity"].toString())),
+    ]);
+  }
+
+  @override
+  bool get isRowCountApproximate => false;
+
+  @override
+  int get rowCount => data.length;
+
+  @override
+  int get selectedRowCount => 0;
 }

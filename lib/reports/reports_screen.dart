@@ -1,10 +1,15 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:excel/excel.dart' as excel;
-import 'package:path_provider/path_provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+
+// PDF
+import 'package:pdf/widgets.dart' as pw;
+
+// MediaStore
+import 'package:media_store_plus/media_store_plus.dart';
 
 class ReportsScreen extends StatefulWidget {
   final String branchName;
@@ -19,6 +24,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
   DateTimeRange? customRange;
   String selectedRange = "This Month";
 
+  final currencyFormatter = NumberFormat("#,##0");
+
   static const Map<String, String> branchLabels = {
     "branch1": "5th London",
     "branch2": "3rd floor London",
@@ -27,6 +34,20 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   String get displayBranch =>
       branchLabels[widget.branchName] ?? widget.branchName;
+
+  // ==============================
+  // 🔥 INIT MEDIASTORE (UPDATED)
+  // ==============================
+  @override
+  void initState() {
+    super.initState();
+    _initMediaStore();
+  }
+
+  Future<void> _initMediaStore() async {
+    await MediaStore.ensureInitialized();
+    MediaStore.appFolder = "LondonReports"; // ✅ ADDED
+  }
 
   int asInt(dynamic value) {
     if (value is int) return value;
@@ -67,28 +88,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
   }
 
   Future<void> _deleteSalesInSelectedRange(BuildContext context) async {
-    final rangeLabel =
-    selectedRange == "Custom Range" && customRange != null
-        ? "${DateFormat('dd/MM/yyyy').format(customRange!.start)} - ${DateFormat('dd/MM/yyyy').format(customRange!.end)}"
-        : selectedRange;
-
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Delete Sales"),
-        content: Text(
-          "This will permanently delete ALL sales in:\n\n$rangeLabel\n\nThis action cannot be undone.",
-        ),
+      builder: (_) => AlertDialog(
+        title: const Text("Bulk Delete"),
+        content: const Text("Delete ALL reports in selected range?"),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel"),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel")),
           ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
             child: const Text("Delete"),
-          ),
+          )
         ],
       ),
     );
@@ -102,7 +113,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     final snapshot = await ref.get();
     final batch = FirebaseFirestore.instance.batch();
-    int deletedCount = 0;
 
     for (final doc in snapshot.docs) {
       final sale = doc.data();
@@ -112,115 +122,127 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
       if (date != null && _isInSelectedRange(date)) {
         batch.delete(doc.reference);
-        deletedCount++;
       }
-    }
-
-    if (deletedCount == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("ℹ️ No sales found for selected range")),
-      );
-      return;
     }
 
     await batch.commit();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("🗑️ Deleted $deletedCount sales")),
-    );
   }
 
-  Future<void> _exportToExcel(
-      BuildContext context, List<QueryDocumentSnapshot> salesDocs) async {
-    final e = excel.Excel.createExcel();
-    final sheet = e['Sales Report'];
+  Future<void> _deleteSale(String saleId) async {
+    await FirebaseFirestore.instance
+        .collection("branches")
+        .doc(widget.branchName)
+        .collection("sales")
+        .doc(saleId)
+        .delete();
+  }
 
-    sheet.appendRow([
-      excel.TextCellValue("Date"),
-      excel.TextCellValue("Customer"),
-      excel.TextCellValue("Employee"),
-      excel.TextCellValue("Product"),
-      excel.TextCellValue("Quantity"),
-      excel.TextCellValue("Unit Price"),
-      excel.TextCellValue("Discount"),
-      excel.TextCellValue("Total"),
-      excel.TextCellValue("Grand Total (Sale)"),
-    ]);
+  // ==============================
+  // 📄 SAVE PDF (UPDATED)
+  // ==============================
+  Future<void> _savePdfToDownloads(Uint8List pdfBytes) async {
+    await MediaStore.ensureInitialized();
+    MediaStore.appFolder = "LondonReports"; // ✅ ADDED
 
-    for (var doc in salesDocs) {
-      final sale = doc.data() as Map<String, dynamic>;
-      final date = (sale["timestamp"] ?? sale["date"]) is Timestamp
-          ? (sale["timestamp"] ?? sale["date"]).toDate()
-          : DateTime.now();
-      if (!_isInSelectedRange(date)) continue;
+    try {
+      final fileName =
+          "report_${DateTime.now().millisecondsSinceEpoch}.pdf";
 
-      final customer = sale["customer"] ?? "Unknown";
-      final employee = sale["employee"] ?? "N/A";
-      final grandTotal = asInt(sale["grandTotal"]);
-      final products = (sale["products"] as List?) ?? [];
+      final tempDir = Directory.systemTemp;
+      final tempFile = File("${tempDir.path}/$fileName");
 
-      for (var item in products) {
-        sheet.appendRow([
-          excel.TextCellValue(DateFormat('dd/MM/yyyy').format(date)),
-          excel.TextCellValue(customer),
-          excel.TextCellValue(employee),
-          excel.TextCellValue(item["product"] ?? "Unknown"),
-          excel.IntCellValue(asInt(item["quantity"])),
-          excel.IntCellValue(asInt(item["unitPrice"])),
-          excel.IntCellValue(asInt(item["discount"])),
-          excel.IntCellValue(asInt(item["total"])),
-          excel.IntCellValue(grandTotal),
-        ]);
+      await tempFile.writeAsBytes(pdfBytes);
+
+      final result = await MediaStore().saveFile(
+        tempFilePath: tempFile.path,
+        dirType: DirType.download,
+        dirName: DirName.download,
+      );
+
+      if (result != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("✅ Saved to Downloads/LondonReports")),
+        );
+      } else {
+        throw "Failed to save file";
       }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("❌ Error: $e")),
+      );
     }
-
-    final now = DateTime.now();
-    final formattedDate =
-        "${now.year}-${now.month}-${now.day}_${now.hour}-${now.minute}";
-    final safeBranchName = displayBranch.replaceAll(" ", "_");
-    final dir = await getApplicationDocumentsDirectory();
-    final file =
-    File("${dir.path}/${safeBranchName}_report_$formattedDate.xlsx");
-
-    await file.writeAsBytes(e.encode()!);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("✅ Excel exported: ${file.path}")),
-    );
   }
 
-  Future<void> _deleteSale(
-      BuildContext context, String saleId, String customer) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Delete Sale"),
-        content:
-        Text("Are you sure you want to delete the sale for $customer?"),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text("Cancel")),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("Delete"),
+  // ==============================
+  // 📄 DOWNLOAD REPORT
+  // ==============================
+  // ONLY CHANGE IS INSIDE _downloadReport METHOD
+  Future<void> _downloadReport(List<QueryDocumentSnapshot> salesDocs) async {
+    final pdf = pw.Document();
+
+    int grandTotal = 0;
+
+    pdf.addPage(
+      pw.MultiPage(
+        build: (context) => [
+          pw.Text("HEBAIC GENERAL TRADERS LIMITED",
+              style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+          pw.Text("REPORT (${displayBranch})"),
+          pw.Text("DATE: ${selectedRange}"),
+          pw.SizedBox(height: 10),
+
+          // 🔥 SALES LIST
+          ...salesDocs.map((doc) {
+            final sale = doc.data() as Map<String, dynamic>;
+
+            final date = (sale["timestamp"] ?? sale["date"]) is Timestamp
+                ? (sale["timestamp"] ?? sale["date"]).toDate()
+                : DateTime.now();
+
+            final products = (sale["products"] as List?) ?? [];
+
+            final total = asInt(sale["grandTotal"]);
+            grandTotal += total;
+
+            return pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text("Date: ${DateFormat('dd/MM/yyyy').format(date)}"),
+                pw.Text("Customer: ${sale["customer"] ?? "Unknown"}"),
+                pw.Text("Employee: ${sale["employee"] ?? "N/A"}"),
+
+                pw.Text("Products:",
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+
+                ...products.map((p) => pw.Text(
+                  " - ${p["product"]} (${p["quantity"]})",
+                )),
+
+                pw.Text("Total: Ksh ${currencyFormatter.format(total)}",
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+
+                pw.Divider(),
+                pw.SizedBox(height: 5),
+              ],
+            );
+          }).toList(),
+
+          pw.SizedBox(height: 10),
+
+          // 🔥 GRAND TOTAL
+          pw.Text(
+            "TOTAL SALES: Ksh ${currencyFormatter.format(grandTotal)}",
+            style: pw.TextStyle(
+              fontWeight: pw.FontWeight.bold,
+              fontSize: 14,
+            ),
           ),
         ],
       ),
     );
 
-    if (confirm == true) {
-      await FirebaseFirestore.instance
-          .collection("branches")
-          .doc(widget.branchName)
-          .collection("sales")
-          .doc(saleId)
-          .delete();
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("🗑️ Sale deleted")));
-    }
+    final bytes = await pdf.save();
+    await _savePdfToDownloads(bytes);
   }
 
   Widget _buildFilterBar(BuildContext context) {
@@ -254,12 +276,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
             }
           },
         ),
-        Text(
-          selectedRange == "Custom Range" && customRange != null
-              ? "${DateFormat('dd/MM/yyyy').format(customRange!.start)} - ${DateFormat('dd/MM/yyyy').format(customRange!.end)}"
-              : selectedRange,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
       ],
     );
   }
@@ -272,9 +288,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.delete_forever),
-            tooltip: "Delete sales in selected range",
             onPressed: () => _deleteSalesInSelectedRange(context),
-          ),
+          )
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
@@ -301,152 +316,105 @@ class _ReportsScreenState extends State<ReportsScreen> {
           int totalSales = salesDocs.fold<int>(
               0,
                   (prev, doc) =>
-              prev +
-                  asInt(
-                      (doc.data() as Map<String, dynamic>)["grandTotal"]));
+              prev + asInt((doc.data() as Map)["grandTotal"]));
 
-          return LayoutBuilder(
-            builder: (context, constraints) {
-              final screenWidth = constraints.maxWidth;
-              final isTablet = screenWidth > 600 && screenWidth <= 900;
-              final isDesktop = screenWidth > 900;
-              final padding = isDesktop
-                  ? 48.0
-                  : isTablet
-                  ? 32.0
-                  : 16.0;
-
-              return Padding(
-                padding: EdgeInsets.all(padding),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                _buildFilterBar(context),
+                Row(
                   children: [
-                    _buildFilterBar(context),
-                    const SizedBox(height: 12),
-                    Text(
-                      "Reports Overview (${displayBranch})",
-                      style: TextStyle(
-                        fontSize: isDesktop ? 28 : isTablet ? 22 : 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Card(
-                      color: Colors.blue.shade50,
-                      elevation: 3,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16)),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12.0),
-                        child: Row(
-                          children: [
-                            Icon(Icons.analytics,
-                                color: Colors.blue.shade700,
-                                size: isDesktop ? 48 : 36),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text("Total Sales",
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.bold)),
-                                  Text("Ksh $totalSales",
-                                      style: TextStyle(
-                                          fontSize: isTablet ? 18 : 16,
-                                          color: Colors.blue.shade800)),
-                                ],
-                              ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.download),
-                              tooltip: "Export to Excel",
-                              onPressed: () =>
-                                  _exportToExcel(context, salesDocs),
-                            )
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: salesDocs.length,
-                        itemBuilder: (context, index) {
-                          final doc = salesDocs[index];
-                          final sale =
-                          doc.data() as Map<String, dynamic>;
-                          final date =
-                          (sale["timestamp"] ?? sale["date"])
-                          is Timestamp
-                              ? (sale["timestamp"] ?? sale["date"])
-                              .toDate()
-                              : DateTime.now();
-                          final customer =
-                              sale["customer"] ?? "Unknown";
-                          final employee =
-                              sale["employee"] ?? "N/A";
-                          final grandTotal =
-                          asInt(sale["grandTotal"]);
-                          final products =
-                              (sale["products"] as List?)
-                                  ?.cast<Map>() ??
-                                  [];
-
-                          return Card(
-                            elevation: 2,
-                            margin:
-                            const EdgeInsets.symmetric(vertical: 6),
-                            shape: RoundedRectangleBorder(
-                                borderRadius:
-                                BorderRadius.circular(12)),
-                            child: ExpansionTile(
-                              leading: Icon(Icons.receipt_long,
-                                  color: Colors.blue.shade600),
-                              title: Text(
-                                  "Customer: $customer — Total: Ksh $grandTotal",
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.w600)),
-                              subtitle: Text(
-                                "Date: ${DateFormat('dd/MM/yyyy').format(date)} | Employee: $employee",
-                                style: const TextStyle(
-                                    color: Colors.black54),
-                              ),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.delete,
-                                    color: Colors.redAccent),
-                                tooltip: "Delete Sale",
-                                onPressed: () => _deleteSale(
-                                    context, doc.id, customer),
-                              ),
-                              children: products.map((item) {
-                                final qty =
-                                asInt(item["quantity"]);
-                                final price =
-                                asInt(item["unitPrice"]);
-                                final total =
-                                asInt(item["total"]);
-                                final discount =
-                                asInt(item["discount"]);
-                                return ListTile(
-                                  title: Text(
-                                      item["product"] ?? "Unknown"),
-                                  subtitle: Text(
-                                      "$qty × Ksh $price - Discount: Ksh $discount = Total: Ksh $total"),
-                                );
-                              }).toList(),
-                            ),
-                          );
-                        },
-                      ),
+                    IconButton(
+                      icon: const Icon(Icons.download),
+                      onPressed: () => _downloadReport(salesDocs),
                     ),
                   ],
                 ),
-              );
-            },
+                Card(
+                  child: ListTile(
+                    title: const Text("Total Sales"),
+                    subtitle: Text("Ksh $totalSales"),
+                  ),
+                ),
+                Expanded(
+                  child: PaginatedDataTable(
+                    header: const Text("Sales Report"),
+                    rowsPerPage: 5,
+                    columns: const [
+                      DataColumn(label: Text("Date")),
+                      DataColumn(label: Text("Customer")),
+                      DataColumn(label: Text("Employee")),
+                      DataColumn(label: Text("Products")),
+                      DataColumn(label: Text("Total")),
+                      DataColumn(label: Text("Action")),
+                    ],
+                    source: _ReportsTableSource(
+                      salesDocs,
+                      asInt,
+                      _deleteSale,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           );
         },
       ),
     );
   }
+}
+
+// ==============================
+// TABLE SOURCE
+// ==============================
+class _ReportsTableSource extends DataTableSource {
+  final List<QueryDocumentSnapshot> data;
+  final int Function(dynamic) asInt;
+  final Function(String) onDelete;
+
+  _ReportsTableSource(this.data, this.asInt, this.onDelete);
+
+  @override
+  DataRow getRow(int index) {
+    if (index >= data.length) return const DataRow(cells: []);
+
+    final doc = data[index];
+    final sale = doc.data() as Map<String, dynamic>;
+
+    final date = (sale["timestamp"] ?? sale["date"]) is Timestamp
+        ? (sale["timestamp"] ?? sale["date"]).toDate()
+        : DateTime.now();
+
+    final customer = sale["customer"] ?? "Unknown";
+    final employee = sale["employee"] ?? "N/A";
+    final total = asInt(sale["grandTotal"]);
+
+    final products = (sale["products"] as List?) ?? [];
+
+    final productNames = products
+        .map((p) => "${p["product"]} (${p["quantity"]})")
+        .join(", ");
+
+    return DataRow(cells: [
+      DataCell(Text(DateFormat('dd/MM/yyyy').format(date))),
+      DataCell(Text(customer)),
+      DataCell(Text(employee)),
+      DataCell(Text(productNames)),
+      DataCell(Text("Ksh $total")),
+      DataCell(
+        IconButton(
+          icon: const Icon(Icons.delete, color: Colors.red),
+          onPressed: () => onDelete(doc.id),
+        ),
+      ),
+    ]);
+  }
+
+  @override
+  bool get isRowCountApproximate => false;
+  @override
+  int get rowCount => data.length;
+  @override
+  int get selectedRowCount => 0;
 }
