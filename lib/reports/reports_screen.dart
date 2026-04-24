@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:pdf/pdf.dart';
 
 // PDF
 import 'package:pdf/widgets.dart' as pw;
@@ -181,9 +182,45 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final pdf = pw.Document();
 
     int grandTotal = 0;
+    List<List<String>> data = [];
+
+    for (var doc in salesDocs) {
+      final sale = doc.data() as Map<String, dynamic>;
+
+      final date = (sale["timestamp"] ?? sale["date"]) is Timestamp
+          ? (sale["timestamp"] ?? sale["date"]).toDate()
+          : DateTime.now();
+
+      final products = (sale["products"] as List?) ?? [];
+
+      final productNames = products
+          .map((p) => "${p["product"]} (${p["quantity"]})")
+          .join(", ");
+
+      final total = asInt(sale["grandTotal"]);
+      grandTotal += total;
+
+      data.add([
+        DateFormat('dd/MM/yyyy').format(date),
+        sale["customer"] ?? "Unknown",
+        sale["employee"] ?? "N/A",
+        productNames,
+        "Ksh ${currencyFormatter.format(total)}",
+      ]);
+    }
+
+    // TOTAL ROW
+    data.add([
+      "",
+      "",
+      "",
+      "TOTAL",
+      "Ksh ${currencyFormatter.format(grandTotal)}"
+    ]);
 
     pdf.addPage(
       pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape, // 🔥 KEY CHANGE
         build: (context) => [
           pw.Text("HEBAIC GENERAL TRADERS LIMITED",
               style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
@@ -191,51 +228,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
           pw.Text("DATE: ${selectedRange}"),
           pw.SizedBox(height: 10),
 
-          // 🔥 SALES LIST
-          ...salesDocs.map((doc) {
-            final sale = doc.data() as Map<String, dynamic>;
-
-            final date = (sale["timestamp"] ?? sale["date"]) is Timestamp
-                ? (sale["timestamp"] ?? sale["date"]).toDate()
-                : DateTime.now();
-
-            final products = (sale["products"] as List?) ?? [];
-
-            final total = asInt(sale["grandTotal"]);
-            grandTotal += total;
-
-            return pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text("Date: ${DateFormat('dd/MM/yyyy').format(date)}"),
-                pw.Text("Customer: ${sale["customer"] ?? "Unknown"}"),
-                pw.Text("Employee: ${sale["employee"] ?? "N/A"}"),
-
-                pw.Text("Products:",
-                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-
-                ...products.map((p) => pw.Text(
-                  " - ${p["product"]} (${p["quantity"]})",
-                )),
-
-                pw.Text("Total: Ksh ${currencyFormatter.format(total)}",
-                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-
-                pw.Divider(),
-                pw.SizedBox(height: 5),
-              ],
-            );
-          }).toList(),
-
-          pw.SizedBox(height: 10),
-
-          // 🔥 GRAND TOTAL
-          pw.Text(
-            "TOTAL SALES: Ksh ${currencyFormatter.format(grandTotal)}",
-            style: pw.TextStyle(
-              fontWeight: pw.FontWeight.bold,
-              fontSize: 14,
-            ),
+          pw.Table.fromTextArray(
+            headers: ["Date", "Customer", "Employee", "Products", "Total"],
+            data: data,
+            border: pw.TableBorder.all(),
+            headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+            cellStyle: const pw.TextStyle(fontSize: 9),
+            cellAlignment: pw.Alignment.centerLeft,
           ),
         ],
       ),
@@ -244,7 +243,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final bytes = await pdf.save();
     await _savePdfToDownloads(bytes);
   }
-
   Widget _buildFilterBar(BuildContext context) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,

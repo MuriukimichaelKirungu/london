@@ -85,7 +85,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
               "branch": branch,
               "branchName": branches[branch],
               "id": doc.id,
-              "availableQty": data["quantity"] ?? 0, // ✅ ADDED
+              "availableQty": data["quantity"] ?? 0,
             });
           }
         }
@@ -116,7 +116,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text("Available: ${item["availableQty"]}"), // ✅ ADDED
+            Text("Available: ${item["availableQty"]}"),
             const SizedBox(height: 10),
             TextField(
               controller: qtyController,
@@ -144,6 +144,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
                   "total": (item["sellingPrice"] ?? 0) * qty,
                   "branch": item["branch"],
                   "branchName": item["branchName"],
+                  "status": "pending",
                 });
               });
 
@@ -173,28 +174,22 @@ class _DeliveryScreenState extends State<DeliveryScreen>
               final customer = customerController.text.trim();
               if (customer.isEmpty) return;
 
-              try {
-                await FirebaseFirestore.instance
-                    .collection("deliveries")
-                    .add({
-                  "products": cart,
-                  "customer": customer,
-                  "status": "pending",
-                  "createdAt": FieldValue.serverTimestamp(),
-                  "createdByName": widget.employeeName,
-                });
+              await FirebaseFirestore.instance
+                  .collection("deliveries")
+                  .add({
+                "products": cart,
+                "customer": customer,
+                "status": "pending",
+                "createdAt": FieldValue.serverTimestamp(),
+                "createdByName": widget.employeeName,
+              });
 
-                setState(() => cart.clear());
-                Navigator.pop(context);
+              setState(() => cart.clear());
+              Navigator.pop(context);
 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("✅ Delivery created")),
-                );
-              } catch (e) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("❌ Error: $e")),
-                );
-              }
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("✅ Delivery created")),
+              );
             },
             child: const Text("Confirm"),
           )
@@ -203,55 +198,80 @@ class _DeliveryScreenState extends State<DeliveryScreen>
     );
   }
 
-  /// ✅ APPROVE DELIVERY
-  Future<void> approveDelivery(DocumentSnapshot doc) async {
-    final data = doc.data() as Map<String, dynamic>;
-    final List products = data["products"] ?? [];
-
+  /// ✅ APPROVE SINGLE PRODUCT (🔥 UPDATED)
+  Future<void> approveSingleProduct(
+      DocumentSnapshot doc, Map item) async {
     try {
-      for (var item in products) {
-        final stockDoc = await FirebaseFirestore.instance
-            .collection("branches")
-            .doc(item["branch"])
-            .collection("stock")
-            .doc(item["productId"])
-            .get();
+      /// 🔻 STOCK UPDATE
+      final stockRef = FirebaseFirestore.instance
+          .collection("branches")
+          .doc(item["branch"])
+          .collection("stock")
+          .doc(item["productId"]);
 
-        if (!stockDoc.exists) continue;
+      final stockDoc = await stockRef.get();
+      if (!stockDoc.exists) return;
 
-        final currentQty = stockDoc["quantity"] ?? 0;
+      final currentQty = stockDoc["quantity"] ?? 0;
+      if (currentQty < item["quantity"]) return;
 
-        if (currentQty < item["quantity"]) continue;
+      await stockRef.update({
+        "quantity": currentQty - item["quantity"],
+      });
 
-        await stockDoc.reference.update({
-          "quantity": currentQty - item["quantity"],
-        });
+      /// 💰 SALE
+      await FirebaseFirestore.instance
+          .collection("branches")
+          .doc(item["branch"])
+          .collection("sales")
+          .add({
+        "products": [item],
+        "grandTotal": item["total"],
+        "timestamp": FieldValue.serverTimestamp(),
+      });
 
-        await FirebaseFirestore.instance
-            .collection("branches")
-            .doc(item["branch"])
-            .collection("sales")
-            .add({
-          "products": [item],
-          "grandTotal": item["total"],
-          "timestamp": FieldValue.serverTimestamp(),
-        });
-      }
-
-      await doc.reference.update({
+      /// 🔥 MOVE TO APPROVED COLLECTION
+      await FirebaseFirestore.instance
+          .collection("deliveries")
+          .add({
+        "products": [item],
+        "customer": doc["customer"],
         "status": "approved",
+        "createdAt": doc["createdAt"],
         "approvedAt": FieldValue.serverTimestamp(),
         "approvedByName": widget.employeeName,
       });
 
+      /// ❌ REMOVE FROM ORIGINAL DELIVERY
+      final products = List.from(doc["products"]);
+      products.removeWhere(
+              (p) => p["productId"] == item["productId"]);
+
+      await doc.reference.update({
+        "products": products,
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("✅ Delivery approved")),
+        const SnackBar(content: Text("✅ Product approved")),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("❌ Error: $e")),
+        SnackBar(content: Text("❌ $e")),
       );
     }
+  }
+
+  /// ❌ REJECT PRODUCT
+  Future<void> rejectSingleProduct(
+      DocumentSnapshot doc, Map item) async {
+    final products = List.from(doc["products"]);
+
+    products.removeWhere(
+            (p) => p["productId"] == item["productId"]);
+
+    await doc.reference.update({
+      "products": products,
+    });
   }
 
   /// 🗑 DELETE DELIVERY
@@ -307,7 +327,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          /// CREATE
+          /// CREATE (UNCHANGED)
           Column(
             children: [
               TextField(
@@ -334,7 +354,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
             ],
           ),
 
-          /// PENDING
+          /// PENDING (UPDATED)
           StreamBuilder(
             stream: deliveryStream("pending"),
             builder: (context, snapshot) {
@@ -354,20 +374,34 @@ class _DeliveryScreenState extends State<DeliveryScreen>
                         ...products.map<Widget>((item) {
                           return ListTile(
                             title: Text(item["product"]),
+                            subtitle:
+                            Text("Qty: ${item["quantity"]}"),
+                            trailing: widget.isAdmin
+                                ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                ElevatedButton(
+                                  onPressed: () =>
+                                      approveSingleProduct(
+                                          doc, item),
+                                  child:
+                                  const Text("Approve"),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.close,
+                                      color: Colors.red),
+                                  onPressed: () =>
+                                      rejectSingleProduct(
+                                          doc, item),
+                                ),
+                              ],
+                            )
+                                : null,
                           );
                         }).toList(),
-                        Row(
-                          children: [
-                            if (widget.isAdmin)
-                              ElevatedButton(
-                                onPressed: () => approveDelivery(doc),
-                                child: const Text("Approve"),
-                              ),
-                            IconButton(
-                              icon: const Icon(Icons.delete),
-                              onPressed: () => deleteDelivery(doc),
-                            )
-                          ],
+                        IconButton(
+                          icon: const Icon(Icons.delete),
+                          onPressed: () => deleteDelivery(doc),
                         )
                       ],
                     ),
@@ -376,8 +410,7 @@ class _DeliveryScreenState extends State<DeliveryScreen>
               );
             },
           ),
-
-          /// APPROVED
+          /// APPROVED (UPDATED DISPLAY)
           StreamBuilder(
             stream: deliveryStream("approved"),
             builder: (context, snapshot) {
@@ -388,12 +421,43 @@ class _DeliveryScreenState extends State<DeliveryScreen>
               return ListView(
                 children: snapshot.data!.docs.map((doc) {
                   final data = doc.data() as Map<String, dynamic>;
+                  final products = data["products"] ?? [];
 
-                  return ListTile(
-                    title: Text(data["customer"] ?? ""),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete),
-                      onPressed: () => deleteDelivery(doc),
+                  return Card(
+                    margin: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
+                    child: Column(
+                      children: [
+                        ...products.map<Widget>((item) {
+                          return ListTile(
+                            leading: const Icon(Icons.check_circle,
+                                color: Colors.green),
+
+                            /// 🔥 PRODUCT NAME
+                            title: Text(
+                              item["product"] ?? "",
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold),
+                            ),
+
+                            /// 🔥 DETAILS
+                            subtitle: Text(
+                              "Qty: ${item["quantity"]}\n"
+                                  "Customer: ${data["customer"]}\n"
+                                  "Time: ${formatTime(data["approvedAt"])}",
+                            ),
+                          );
+                        }).toList(),
+
+                        /// 🗑 DELETE
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red),
+                            onPressed: () => deleteDelivery(doc),
+                          ),
+                        )
+                      ],
                     ),
                   );
                 }).toList(),
